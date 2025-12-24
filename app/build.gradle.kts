@@ -65,6 +65,8 @@ dependencies {
     implementation("com.google.firebase:firebase-auth")
     implementation("com.google.firebase:firebase-firestore-ktx")
 
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+
 // Navigasi
     implementation("androidx.navigation:navigation-compose:2.7.6")
 }

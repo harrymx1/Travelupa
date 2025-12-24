@@ -38,14 +38,18 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.papb.travelupa.ui.theme.TravelupaTheme
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import com.google.firebase.auth.FirebaseUser
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         FirebaseApp.initializeApp(this)
+
+        val currentUser = FirebaseAuth.getInstance().currentUser
+
         setContent {
             TravelupaTheme {
-                AppNavigation()
+                AppNavigation(currentUser = currentUser)
             }
         }
     }
@@ -58,13 +62,16 @@ sealed class Screen(val route: String) {
 }
 
 @Composable
-fun AppNavigation() {
+fun AppNavigation(currentUser: FirebaseUser?) { // Menerima parameter user
     val navController = rememberNavController()
     val auth = FirebaseAuth.getInstance()
 
-    val startDest = if (auth.currentUser != null) Screen.Home.route else Screen.Login.route
+    // BAB 6: Tentukan startDestination berdasarkan status login
+    val startDest = if (currentUser != null) Screen.Home.route else Screen.Login.route
 
     NavHost(navController = navController, startDestination = startDest) {
+
+        // Screen Login
         composable(Screen.Login.route) {
             LoginScreen(onLoginSuccess = {
                 navController.navigate(Screen.Home.route) {
@@ -72,11 +79,18 @@ fun AppNavigation() {
                 }
             })
         }
+
+        // Screen Home (Rekomendasi Tempat)
         composable(Screen.Home.route) {
+            // Kita gunakan CoroutineScope di dalam screen ini untuk Logout nanti
+            val scope = rememberCoroutineScope()
+
             RekomendasiTempatScreen(onLogout = {
-                auth.signOut()
-                navController.navigate(Screen.Login.route) {
-                    popUpTo(Screen.Home.route) { inclusive = true }
+                scope.launch {
+                    auth.signOut()
+                    navController.navigate(Screen.Login.route) {
+                        popUpTo(Screen.Home.route) { inclusive = true }
+                    }
                 }
             })
         }
