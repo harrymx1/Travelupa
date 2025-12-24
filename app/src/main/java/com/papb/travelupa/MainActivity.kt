@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.room.Room
 import coil.compose.rememberAsyncImagePainter
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
@@ -48,15 +49,20 @@ class MainActivity : ComponentActivity() {
         FirebaseApp.initializeApp(this)
         val currentUser = FirebaseAuth.getInstance().currentUser
 
+        val db = Room.databaseBuilder(
+            applicationContext,
+            AppDatabase::class.java, "travelupa-database"
+        ).build()
+        val imageDao = db.imageDao()
+
         setContent {
             TravelupaTheme {
-                AppNavigation(currentUser)
+                AppNavigation(currentUser, imageDao)
             }
         }
     }
 }
 
-// 1. UPDATE RUTE NAVIGASI
 sealed class Screen(val route: String) {
     object Greeting : Screen("greeting")
     object Login : Screen("login")
@@ -64,43 +70,33 @@ sealed class Screen(val route: String) {
 }
 
 @Composable
-fun AppNavigation(currentUser: FirebaseUser?) {
+fun AppNavigation(currentUser: FirebaseUser?, imageDao: ImageDao) {
     val navController = rememberNavController()
-
     val startDest = if (currentUser != null) Screen.Home.route else Screen.Greeting.route
 
     NavHost(navController = navController, startDestination = startDest) {
-
-        // HALAMAN GREETING (SAMBUTAN)
         composable(Screen.Greeting.route) {
             GreetingScreen(onStartClick = {
-                navController.navigate(Screen.Login.route) {
-                    popUpTo(Screen.Greeting.route) { inclusive = true }
-                }
+                navController.navigate(Screen.Login.route) { popUpTo(Screen.Greeting.route) { inclusive = true } }
             })
         }
-
-        // HALAMAN LOGIN
         composable(Screen.Login.route) {
             LoginScreen(onLoginSuccess = {
-                navController.navigate(Screen.Home.route) {
-                    popUpTo(Screen.Login.route) { inclusive = true }
-                }
+                navController.navigate(Screen.Home.route) { popUpTo(Screen.Login.route) { inclusive = true } }
             })
         }
-
-        // HALAMAN HOME
         composable(Screen.Home.route) {
             val auth = FirebaseAuth.getInstance()
             val scope = rememberCoroutineScope()
-            RekomendasiTempatScreen(onLogout = {
-                scope.launch {
-                    auth.signOut()
-                    navController.navigate(Screen.Login.route) {
-                        popUpTo(Screen.Home.route) { inclusive = true }
+            RekomendasiTempatScreen(
+                imageDao = imageDao,
+                onLogout = {
+                    scope.launch {
+                        auth.signOut()
+                        navController.navigate(Screen.Login.route) { popUpTo(Screen.Home.route) { inclusive = true } }
                     }
                 }
-            })
+            )
         }
     }
 }
@@ -108,18 +104,12 @@ fun AppNavigation(currentUser: FirebaseUser?) {
 @Composable
 fun GreetingScreen(onStartClick: () -> Unit) {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.padding(16.dp)
-        ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(16.dp)) {
             Text("Selamat Datang di Travelupa!", style = MaterialTheme.typography.h4, textAlign = TextAlign.Center)
             Spacer(modifier = Modifier.height(16.dp))
             Text("Solusi buat kamu yang lupa kemana-mana", style = MaterialTheme.typography.h6, textAlign = TextAlign.Center)
         }
-        Button(
-            onClick = onStartClick,
-            modifier = Modifier.width(360.dp).align(Alignment.BottomCenter).padding(bottom = 16.dp)
-        ) {
+        Button(onClick = onStartClick, modifier = Modifier.width(360.dp).align(Alignment.BottomCenter).padding(bottom = 16.dp)) {
             Text("Mulai")
         }
     }
@@ -134,11 +124,7 @@ fun LoginScreen(onLoginSuccess: () -> Unit) {
     val scope = rememberCoroutineScope()
     val auth = FirebaseAuth.getInstance()
 
-    Column(
-        modifier = Modifier.fillMaxSize().padding(16.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
         Text("Login Travelupa", style = MaterialTheme.typography.h4)
         Spacer(modifier = Modifier.height(32.dp))
         OutlinedTextField(value = email, onValueChange = { email = it }, label = { Text("Email") }, modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email))
@@ -146,29 +132,20 @@ fun LoginScreen(onLoginSuccess: () -> Unit) {
         OutlinedTextField(value = password, onValueChange = { password = it }, label = { Text("Password") }, modifier = Modifier.fillMaxWidth(), visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
         Spacer(modifier = Modifier.height(16.dp))
         if (errorMessage != null) Text(text = errorMessage!!, color = Color.Red)
-        Button(
-            onClick = {
-                if (email.isBlank() || password.isBlank()) { errorMessage = "Isi semua data"; return@Button }
-                isLoading = true
-                scope.launch {
-                    try {
-                        auth.signInWithEmailAndPassword(email, password).await()
-                        isLoading = false
-                        onLoginSuccess()
-                    } catch (e: Exception) {
-                        try {
-                            auth.createUserWithEmailAndPassword(email, password).await()
-                            isLoading = false
-                            onLoginSuccess()
-                        } catch (regError: Exception) {
-                            isLoading = false
-                            errorMessage = "Error: ${e.message}"
-                        }
-                    }
+        Button(onClick = {
+            if (email.isBlank() || password.isBlank()) { errorMessage = "Isi semua data"; return@Button }
+            isLoading = true
+            scope.launch {
+                try {
+                    auth.signInWithEmailAndPassword(email, password).await()
+                    isLoading = false
+                    onLoginSuccess()
+                } catch (e: Exception) {
+                    try { auth.createUserWithEmailAndPassword(email, password).await(); isLoading = false; onLoginSuccess() }
+                    catch (regError: Exception) { isLoading = false; errorMessage = "Error: ${e.message}" }
                 }
-            },
-            modifier = Modifier.fillMaxWidth(), enabled = !isLoading
-        ) {
+            }
+        }, modifier = Modifier.fillMaxWidth(), enabled = !isLoading) {
             if (isLoading) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp)) else Text("Masuk / Daftar")
         }
     }
@@ -177,11 +154,12 @@ fun LoginScreen(onLoginSuccess: () -> Unit) {
 data class TempatWisata(val id: String = "", val nama: String = "", val deskripsi: String = "", val gambarUriString: String? = null)
 
 @Composable
-fun RekomendasiTempatScreen(onLogout: () -> Unit) {
+fun RekomendasiTempatScreen(imageDao: ImageDao, onLogout: () -> Unit) {
     val firestore = FirebaseFirestore.getInstance()
     var daftarTempatWisata by remember { mutableStateOf(listOf<TempatWisata>()) }
     var showTambahDialog by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
         firestore.collection("tempat_wisata").addSnapshotListener { snapshot, _ ->
@@ -205,6 +183,13 @@ fun RekomendasiTempatScreen(onLogout: () -> Unit) {
         if (showTambahDialog) {
             TambahTempatDialogFirestore(onDismiss = { showTambahDialog = false }, onTambah = { nama, deskripsi, uri ->
                 val savedPath = if (uri != null) saveImageToInternalStorage(context, uri) else ""
+
+                if (savedPath.isNotEmpty()) {
+                    scope.launch {
+                        imageDao.insert(ImageEntity(localPath = savedPath))
+                    }
+                }
+
                 val data = hashMapOf("nama" to nama, "deskripsi" to deskripsi, "gambarUriString" to savedPath)
                 firestore.collection("tempat_wisata").add(data).addOnSuccessListener { showTambahDialog = false }
             })
