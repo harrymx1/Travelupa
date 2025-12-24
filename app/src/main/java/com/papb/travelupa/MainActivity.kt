@@ -2,16 +2,17 @@ package com.papb.travelupa
 
 import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -23,78 +24,211 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
 import coil.compose.rememberAsyncImagePainter
-import coil.request.ImageRequest
+import com.google.firebase.FirebaseApp
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
 import com.papb.travelupa.ui.theme.TravelupaTheme
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        FirebaseApp.initializeApp(this)
         setContent {
             TravelupaTheme {
-                RekomendasiTempatScreen()
+                AppNavigation()
             }
         }
     }
 }
 
-// 1. Update Data Class: Mendukung Gambar Resource (bawaan) & URI (dari galeri)
+// --- NAVIGASI ---
+sealed class Screen(val route: String) {
+    object Login : Screen("login")
+    object Home : Screen("home")
+}
+
+@Composable
+fun AppNavigation() {
+    val navController = rememberNavController()
+    val auth = FirebaseAuth.getInstance()
+
+    val startDest = if (auth.currentUser != null) Screen.Home.route else Screen.Login.route
+
+    NavHost(navController = navController, startDestination = startDest) {
+        composable(Screen.Login.route) {
+            LoginScreen(onLoginSuccess = {
+                navController.navigate(Screen.Home.route) {
+                    popUpTo(Screen.Login.route) { inclusive = true }
+                }
+            })
+        }
+        composable(Screen.Home.route) {
+            RekomendasiTempatScreen(onLogout = {
+                auth.signOut()
+                navController.navigate(Screen.Login.route) {
+                    popUpTo(Screen.Home.route) { inclusive = true }
+                }
+            })
+        }
+    }
+}
+
+// --- HALAMAN LOGIN ---
+@Composable
+fun LoginScreen(onLoginSuccess: () -> Unit) {
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    var isLoading by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val auth = FirebaseAuth.getInstance()
+
+    Column(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text("Login Travelupa", style = MaterialTheme.typography.h4)
+        Spacer(modifier = Modifier.height(32.dp))
+
+        OutlinedTextField(
+            value = email,
+            onValueChange = { email = it },
+            label = { Text("Email") },
+            modifier = Modifier.fillMaxWidth(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email)
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedTextField(
+            value = password,
+            onValueChange = { password = it },
+            label = { Text("Password") },
+            modifier = Modifier.fillMaxWidth(),
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+
+        if (errorMessage != null) {
+            Text(text = errorMessage!!, color = Color.Red)
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+
+        Button(
+            onClick = {
+                if (email.isBlank() || password.isBlank()) {
+                    errorMessage = "Email dan Password tidak boleh kosong"
+                    return@Button
+                }
+                isLoading = true
+                scope.launch {
+                    try {
+                        auth.signInWithEmailAndPassword(email, password).await()
+                        isLoading = false
+                        onLoginSuccess()
+                    } catch (e: Exception) {
+                        try {
+                            auth.createUserWithEmailAndPassword(email, password).await()
+                            isLoading = false
+                            onLoginSuccess()
+                        } catch (regError: Exception) {
+                            isLoading = false
+                            errorMessage = "Error: ${e.message}"
+                        }
+                    }
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !isLoading
+        ) {
+            if (isLoading) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp))
+            else Text("Masuk / Daftar")
+        }
+    }
+}
+
+// --- HALAMAN UTAMA (FIRESTORE) ---
 data class TempatWisata(
-    val nama: String,
-    val deskripsi: String,
-    val gambarUriString: String? = null,
-    val gambarResId: Int? = null
+    val id: String = "",
+    val nama: String = "",
+    val deskripsi: String = "",
+    val gambarUriString: String? = null
 )
 
 @Composable
-fun RekomendasiTempatScreen() {
-    // STATE: Daftar wisata yang bisa berubah (bertambah/berkurang)
-    var daftarTempatWisata by remember { mutableStateOf(listOf(
-        TempatWisata("Tumpak Sewu", "Air terjun tercantik di Jawa Timur.", null, R.drawable.tumpak_sewu),
-        TempatWisata("Gunung Bromo", "Matahari terbitnya bagus banget.", null, R.drawable.gunung_bromo)
-    )) }
-
-    // STATE: Mengontrol kapan dialog muncul
+fun RekomendasiTempatScreen(onLogout: () -> Unit) {
+    val firestore = FirebaseFirestore.getInstance()
+    var daftarTempatWisata by remember { mutableStateOf(listOf<TempatWisata>()) }
     var showTambahDialog by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+
+    // Baca data dari Firestore saat pertama kali dibuka
+    LaunchedEffect(Unit) {
+        firestore.collection("tempat_wisata").addSnapshotListener { snapshot, _ ->
+            if (snapshot != null) {
+                val list = snapshot.documents.map { doc ->
+                    TempatWisata(
+                        id = doc.id,
+                        nama = doc.getString("nama") ?: "",
+                        deskripsi = doc.getString("deskripsi") ?: "",
+                        gambarUriString = doc.getString("gambarUriString")
+                    )
+                }
+                daftarTempatWisata = list
+            }
+        }
+    }
 
     Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Travelupa") },
+                actions = {
+                    TextButton(onClick = onLogout) {
+                        Text("Logout", color = Color.White)
+                    }
+                }
+            )
+        },
         floatingActionButton = {
-            FloatingActionButton(
-                onClick = { showTambahDialog = true },
-                backgroundColor = MaterialTheme.colors.primary
-            ) {
-                Icon(Icons.Filled.Add, contentDescription = "Tambah Tempat Wisata")
+            FloatingActionButton(onClick = { showTambahDialog = true }) {
+                Icon(Icons.Filled.Add, contentDescription = "Tambah")
             }
         }
     ) { paddingValues ->
-        // TAMPILAN LIST
-        LazyColumn(
-            modifier = Modifier
-                .padding(paddingValues)
-                .padding(16.dp)
-        ) {
+        LazyColumn(modifier = Modifier.padding(paddingValues).padding(16.dp)) {
             items(daftarTempatWisata) { tempat ->
-                TempatItemEditable(
-                    tempat = tempat,
-                    onDelete = {
-                        // Logika Hapus Data
-                        daftarTempatWisata = daftarTempatWisata.filter { it != tempat }
-                    }
-                )
+                TempatItemFirestore(tempat) {
+                    // Hapus data dari Firestore
+                    firestore.collection("tempat_wisata").document(tempat.id).delete()
+                }
             }
         }
 
-        // TAMPILAN DIALOG (Muncul jika showTambahDialog = true)
         if (showTambahDialog) {
-            TambahTempatWisataDialog(
+            TambahTempatDialogFirestore(
                 onDismiss = { showTambahDialog = false },
-                onTambah = { nama, deskripsi, gambarUri ->
-                    val uriString = gambarUri?.toString()
-                    val newTempat = TempatWisata(nama, deskripsi, uriString, null)
-                    daftarTempatWisata = daftarTempatWisata + newTempat
-                    showTambahDialog = false
+                onTambah = { nama, deskripsi, uri ->
+                    val data = hashMapOf(
+                        "nama" to nama,
+                        "deskripsi" to deskripsi,
+                        "gambarUriString" to (uri?.toString() ?: "")
+                    )
+                    firestore.collection("tempat_wisata").add(data)
+                        .addOnSuccessListener {
+                            Toast.makeText(context, "Berhasil disimpan!", Toast.LENGTH_SHORT).show()
+                            showTambahDialog = false
+                        }
                 }
             )
         }
@@ -102,139 +236,55 @@ fun RekomendasiTempatScreen() {
 }
 
 @Composable
-fun TempatItemEditable(tempat: TempatWisata, onDelete: () -> Unit) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp),
-        elevation = 4.dp
-    ) {
+fun TempatItemFirestore(tempat: TempatWisata, onDelete: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), elevation = 4.dp) {
         Column(modifier = Modifier.padding(16.dp)) {
-            // Logika Menampilkan Gambar (Bisa dari URI Galeri atau Resource Drawable)
-            val painter = if (tempat.gambarUriString != null) {
-                rememberAsyncImagePainter(
-                    ImageRequest.Builder(LocalContext.current).data(data = Uri.parse(tempat.gambarUriString)).build()
+            if (!tempat.gambarUriString.isNullOrEmpty()) {
+                Image(
+                    painter = rememberAsyncImagePainter(tempat.gambarUriString),
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxWidth().height(200.dp),
+                    contentScale = ContentScale.Crop
                 )
-            } else if (tempat.gambarResId != null) {
-                painterResource(id = tempat.gambarResId)
             } else {
-                painterResource(id = R.drawable.ic_launcher_background)
+                Box(modifier = Modifier.fillMaxWidth().height(200.dp).clickable{}, contentAlignment = Alignment.Center) {
+                    Text("No Image")
+                }
             }
-
-            Image(
-                painter = painter,
-                contentDescription = tempat.nama,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(200.dp),
-                contentScale = ContentScale.Crop
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = tempat.nama,
-                        style = MaterialTheme.typography.h6,
-                        modifier = Modifier.padding(bottom = 8.dp, top = 12.dp)
-                    )
-                    Text(
-                        text = tempat.deskripsi,
-                        style = MaterialTheme.typography.body2,
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
-                }
-                // Tombol Hapus
-                IconButton(onClick = onDelete) {
-                    Icon(
-                        Icons.Filled.Delete,
-                        contentDescription = "Hapus",
-                        tint = MaterialTheme.colors.error
-                    )
-                }
+            Text(tempat.nama, style = MaterialTheme.typography.h6)
+            Text(tempat.deskripsi, style = MaterialTheme.typography.body2)
+            IconButton(onClick = onDelete) {
+                Icon(Icons.Filled.Delete, contentDescription = "Hapus", tint = Color.Red)
             }
         }
     }
 }
 
 @Composable
-fun TambahTempatWisataDialog(
-    onDismiss: () -> Unit,
-    onTambah: (String, String, Uri?) -> Unit
-) {
+fun TambahTempatDialogFirestore(onDismiss: () -> Unit, onTambah: (String, String, Uri?) -> Unit) {
     var nama by remember { mutableStateOf("") }
     var deskripsi by remember { mutableStateOf("") }
     var gambarUri by remember { mutableStateOf<Uri?>(null) }
-
-    // Launcher untuk membuka Galeri HP
-    val gambarLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
-        gambarUri = uri
-    }
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { gambarUri = it }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Tambah Tempat Wisata Baru") },
+        title = { Text("Tambah Data (Cloud)") },
         text = {
             Column {
-                TextField(
-                    value = nama,
-                    onValueChange = { nama = it },
-                    label = { Text("Nama Tempat") },
-                    modifier = Modifier.fillMaxWidth()
-                )
+                OutlinedTextField(value = nama, onValueChange = { nama = it }, label = { Text("Nama") })
+                OutlinedTextField(value = deskripsi, onValueChange = { deskripsi = it }, label = { Text("Deskripsi") })
                 Spacer(modifier = Modifier.height(8.dp))
-                TextField(
-                    value = deskripsi,
-                    onValueChange = { deskripsi = it },
-                    label = { Text("Deskripsi") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // Area Preview Gambar yang dipilih
-                if (gambarUri != null) {
-                    Image(
-                        painter = rememberAsyncImagePainter(model = gambarUri),
-                        contentDescription = "Selected Image",
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(200.dp)
-                            .clickable { gambarLauncher.launch("image/*") },
-                        contentScale = ContentScale.Crop
-                    )
-                } else {
-                    Button(
-                        onClick = { gambarLauncher.launch("image/*") },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Pilih Gambar")
-                    }
+                Button(onClick = { launcher.launch("image/*") }) {
+                    Text(if (gambarUri != null) "Gambar Terpilih" else "Pilih Gambar")
                 }
             }
         },
         confirmButton = {
-            Button(
-                onClick = {
-                    if (nama.isNotBlank() && deskripsi.isNotBlank()) {
-                        onTambah(nama, deskripsi, gambarUri)
-                    }
-                }
-            ) {
-                Text("Tambah")
+            Button(onClick = { if (nama.isNotBlank()) onTambah(nama, deskripsi, gambarUri) }) {
+                Text("Simpan")
             }
         },
-        dismissButton = {
-            Button(
-                onClick = onDismiss,
-                colors = ButtonDefaults.buttonColors(backgroundColor = MaterialTheme.colors.surface)
-            ) {
-                Text("Batal")
-            }
-        }
+        dismissButton = { Button(onClick = onDismiss) { Text("Batal") } }
     )
 }

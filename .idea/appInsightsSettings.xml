@@ -8,10 +8,10 @@
             <InsightsFilterSettings>
               <option name="connection">
                 <ConnectionSetting>
-                  <option name="appId" value="PLACEHOLDER" />
-                  <option name="mobileSdkAppId" value="" />
-                  <option name="projectId" value="" />
-                  <option name="projectNumber" value="" />
+                  <option name="appId" value="com.papb.travelupa" />
+                  <option name="mobileSdkAppId" value="1:780522986150:android:1ea8a981a56de80926f267" />
+                  <option name="projectId" value="travelupa-f9c8b" />
+                  <option name="projectNumber" value="780522986150" />
                 </ConnectionSetting>
               </option>
               <option name="signal" value="SIGNAL_UNSPECIFIED" />
