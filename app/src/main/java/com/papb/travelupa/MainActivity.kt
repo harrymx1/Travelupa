@@ -1,5 +1,8 @@
 package com.papb.travelupa
 
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
@@ -26,7 +29,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -38,40 +40,36 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.papb.travelupa.ui.theme.TravelupaTheme
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
-import com.google.firebase.auth.FirebaseUser
+import java.io.File
+import java.io.FileOutputStream
+import java.util.UUID
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         FirebaseApp.initializeApp(this)
-
         val currentUser = FirebaseAuth.getInstance().currentUser
 
         setContent {
             TravelupaTheme {
-                AppNavigation(currentUser = currentUser)
+                AppNavigation(currentUser)
             }
         }
     }
 }
 
-// --- NAVIGASI ---
 sealed class Screen(val route: String) {
     object Login : Screen("login")
     object Home : Screen("home")
 }
 
 @Composable
-fun AppNavigation(currentUser: FirebaseUser?) { // Menerima parameter user
+fun AppNavigation(currentUser: com.google.firebase.auth.FirebaseUser?) {
     val navController = rememberNavController()
     val auth = FirebaseAuth.getInstance()
-
-    // BAB 6: Tentukan startDestination berdasarkan status login
     val startDest = if (currentUser != null) Screen.Home.route else Screen.Login.route
 
     NavHost(navController = navController, startDestination = startDest) {
-
-        // Screen Login
         composable(Screen.Login.route) {
             LoginScreen(onLoginSuccess = {
                 navController.navigate(Screen.Home.route) {
@@ -79,12 +77,8 @@ fun AppNavigation(currentUser: FirebaseUser?) { // Menerima parameter user
                 }
             })
         }
-
-        // Screen Home (Rekomendasi Tempat)
         composable(Screen.Home.route) {
-            // Kita gunakan CoroutineScope di dalam screen ini untuk Logout nanti
             val scope = rememberCoroutineScope()
-
             RekomendasiTempatScreen(onLogout = {
                 scope.launch {
                     auth.signOut()
@@ -97,7 +91,6 @@ fun AppNavigation(currentUser: FirebaseUser?) { // Menerima parameter user
     }
 }
 
-// --- HALAMAN LOGIN ---
 @Composable
 fun LoginScreen(onLoginSuccess: () -> Unit) {
     var email by remember { mutableStateOf("") }
@@ -114,7 +107,6 @@ fun LoginScreen(onLoginSuccess: () -> Unit) {
     ) {
         Text("Login Travelupa", style = MaterialTheme.typography.h4)
         Spacer(modifier = Modifier.height(32.dp))
-
         OutlinedTextField(
             value = email,
             onValueChange = { email = it },
@@ -132,16 +124,14 @@ fun LoginScreen(onLoginSuccess: () -> Unit) {
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
         )
         Spacer(modifier = Modifier.height(16.dp))
-
         if (errorMessage != null) {
             Text(text = errorMessage!!, color = Color.Red)
             Spacer(modifier = Modifier.height(8.dp))
         }
-
         Button(
             onClick = {
                 if (email.isBlank() || password.isBlank()) {
-                    errorMessage = "Email dan Password tidak boleh kosong"
+                    errorMessage = "Isi semua data"
                     return@Button
                 }
                 isLoading = true
@@ -171,7 +161,6 @@ fun LoginScreen(onLoginSuccess: () -> Unit) {
     }
 }
 
-// --- HALAMAN UTAMA (FIRESTORE) ---
 data class TempatWisata(
     val id: String = "",
     val nama: String = "",
@@ -186,7 +175,6 @@ fun RekomendasiTempatScreen(onLogout: () -> Unit) {
     var showTambahDialog by remember { mutableStateOf(false) }
     val context = LocalContext.current
 
-    // Baca data dari Firestore saat pertama kali dibuka
     LaunchedEffect(Unit) {
         firestore.collection("tempat_wisata").addSnapshotListener { snapshot, _ ->
             if (snapshot != null) {
@@ -207,11 +195,7 @@ fun RekomendasiTempatScreen(onLogout: () -> Unit) {
         topBar = {
             TopAppBar(
                 title = { Text("Travelupa") },
-                actions = {
-                    TextButton(onClick = onLogout) {
-                        Text("Logout", color = Color.White)
-                    }
-                }
+                actions = { TextButton(onClick = onLogout) { Text("Logout", color = Color.White) } }
             )
         },
         floatingActionButton = {
@@ -223,7 +207,6 @@ fun RekomendasiTempatScreen(onLogout: () -> Unit) {
         LazyColumn(modifier = Modifier.padding(paddingValues).padding(16.dp)) {
             items(daftarTempatWisata) { tempat ->
                 TempatItemFirestore(tempat) {
-                    // Hapus data dari Firestore
                     firestore.collection("tempat_wisata").document(tempat.id).delete()
                 }
             }
@@ -233,10 +216,16 @@ fun RekomendasiTempatScreen(onLogout: () -> Unit) {
             TambahTempatDialogFirestore(
                 onDismiss = { showTambahDialog = false },
                 onTambah = { nama, deskripsi, uri ->
+                    val savedPath = if (uri != null) {
+                        saveImageToInternalStorage(context, uri)
+                    } else {
+                        ""
+                    }
+
                     val data = hashMapOf(
                         "nama" to nama,
                         "deskripsi" to deskripsi,
-                        "gambarUriString" to (uri?.toString() ?: "")
+                        "gambarUriString" to savedPath
                     )
                     firestore.collection("tempat_wisata").add(data)
                         .addOnSuccessListener {
@@ -255,19 +244,20 @@ fun TempatItemFirestore(tempat: TempatWisata, onDelete: () -> Unit) {
         Column(modifier = Modifier.padding(16.dp)) {
             if (!tempat.gambarUriString.isNullOrEmpty()) {
                 Image(
-                    painter = rememberAsyncImagePainter(tempat.gambarUriString),
+                    painter = rememberAsyncImagePainter(model = java.io.File(tempat.gambarUriString)),
                     contentDescription = null,
                     modifier = Modifier.fillMaxWidth().height(200.dp),
                     contentScale = ContentScale.Crop
                 )
             } else {
-                Box(modifier = Modifier.fillMaxWidth().height(200.dp).clickable{}, contentAlignment = Alignment.Center) {
-                    Text("No Image")
+                Box(modifier = Modifier.fillMaxWidth().height(200.dp), contentAlignment = Alignment.Center) {
+                    Text("No Image", color = Color.Gray)
                 }
             }
+            Spacer(modifier = Modifier.height(8.dp))
             Text(tempat.nama, style = MaterialTheme.typography.h6)
             Text(tempat.deskripsi, style = MaterialTheme.typography.body2)
-            IconButton(onClick = onDelete) {
+            IconButton(onClick = onDelete, modifier = Modifier.align(Alignment.End)) {
                 Icon(Icons.Filled.Delete, contentDescription = "Hapus", tint = Color.Red)
             }
         }
@@ -283,14 +273,25 @@ fun TambahTempatDialogFirestore(onDismiss: () -> Unit, onTambah: (String, String
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Tambah Data (Cloud)") },
+        title = { Text("Tambah Data") },
         text = {
             Column {
                 OutlinedTextField(value = nama, onValueChange = { nama = it }, label = { Text("Nama") })
+                Spacer(modifier = Modifier.height(8.dp))
                 OutlinedTextField(value = deskripsi, onValueChange = { deskripsi = it }, label = { Text("Deskripsi") })
                 Spacer(modifier = Modifier.height(8.dp))
-                Button(onClick = { launcher.launch("image/*") }) {
-                    Text(if (gambarUri != null) "Gambar Terpilih" else "Pilih Gambar")
+
+                if (gambarUri != null) {
+                    Image(
+                        painter = rememberAsyncImagePainter(gambarUri),
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxWidth().height(150.dp).clickable { launcher.launch("image/*") },
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    Button(onClick = { launcher.launch("image/*") }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Pilih Gambar")
+                    }
                 }
             }
         },
@@ -301,4 +302,26 @@ fun TambahTempatDialogFirestore(onDismiss: () -> Unit, onTambah: (String, String
         },
         dismissButton = { Button(onClick = onDismiss) { Text("Batal") } }
     )
+}
+
+fun saveImageToInternalStorage(context: Context, uri: Uri): String {
+    try {
+        val fileName = "img_${System.currentTimeMillis()}.jpg"
+
+        val inputStream = context.contentResolver.openInputStream(uri)
+
+        val file = File(context.filesDir, fileName)
+        val outputStream = FileOutputStream(file)
+
+        inputStream?.use { input ->
+            outputStream.use { output ->
+                input.copyTo(output)
+            }
+        }
+
+        return file.absolutePath
+    } catch (e: Exception) {
+        e.printStackTrace()
+        return ""
+    }
 }
